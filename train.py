@@ -44,11 +44,11 @@ LGB_PARAMS = dict(objective='binary', learning_rate=0.03, n_estimators=400, num_
                   reg_lambda=5.0, verbose=-1,
                   # детерминизм при многопоточности: фиксированный способ построения гистограмм
                   deterministic=True, force_row_wise=True)
-# Группы, не входящие в финальную модель (обоснование — README и EXPERIMENTS.md):
-#   x    — популярность объявлений за сутки: после устранения утечки и сдвига train/test прироста не даёт;
+# Группы, не входящие в базовый набор (обоснование — README и EXPERIMENTS.md):
 #   w    — время на странице по типу события и гистограмма интервалов: дублирует квантили тайминга;
 #   leak — демонстрационная протекающая версия x_;
-#   u    — UA целиком не берётся; в модель идёт только подмножество UA_PARSED ниже.
+#   u    — UA целиком не берётся; в модель идёт только подмножество UA_PARSED ниже;
+#   x    — популярность объявлений за сутки добавляется в конец набора отдельно (итерация 9), см. prepare().
 EXCLUDED_GROUPS = ('u', 'x', 'w', 'leak')
 # Разобранный UA: тип клиента (приложение / браузер), ОС, версия и противоречия в трафике куки
 # (несколько платформ при одном UA, UA не сходится с platform). Сырая строка и её частота
@@ -58,6 +58,7 @@ UA_PARSED = ['u_n_ua', 'u_n_platform', 'u_share_mismatch', 'u_share_na_platform'
              'u_family', 'u_os', 'u_version', 'u_version_lag', 'u_is_mobile']
 # Финальная модель: ранговое среднее LightGBM + CatBoost + ExtraTrees на поведенческих признаках + UA_PARSED.
 FINAL_MODEL = 'blend'
+CAT_PARAMS = dict(iterations=600, learning_rate=0.05, depth=6)
 FINAL_EXPERIMENT = 'blend_final'
 
 
@@ -87,8 +88,8 @@ def fit_predict(Xtr, ytr, Xte, model, seeds, params=None):
         return m.predict_proba(Xte.fillna(-1))[:, 1], None
     if model == 'cat':
         from catboost import CatBoostClassifier
-        preds = [CatBoostClassifier(iterations=600, learning_rate=0.05, depth=6, random_seed=SEED + s,
-                                    thread_count=4, verbose=0, allow_writing_files=False).fit(Xtr, ytr).predict_proba(Xte)[:, 1]
+        preds = [CatBoostClassifier(**CAT_PARAMS, random_seed=SEED + s, thread_count=4, verbose=0,
+                                    allow_writing_files=False).fit(Xtr, ytr).predict_proba(Xte)[:, 1]
                  for s in range(seeds)]
         return np.mean(preds, axis=0), None
     if model == 'blend':
@@ -96,7 +97,7 @@ def fit_predict(Xtr, ytr, Xte, model, seeds, params=None):
         p_lgb, imp = fit_predict(Xtr, ytr, Xte, 'lgb', seeds, params)
         p_cat, _ = fit_predict(Xtr, ytr, Xte, 'cat', seeds)
         p_et, _ = fit_predict(Xtr, ytr, Xte, 'et', 1)
-        # сумма трёх рангов часто совпадает у разных кук, а метрика отмечает равные score группой;
+        # сумма рангов часто совпадает у разных кук, а метрика отмечает равные score группой;
         # ничьи разбиваем средним вероятностей (осмысленный вторичный скор, не случайный шум)
         tie_break = (p_lgb + p_cat + p_et) / 3 * 1e-6
         return (_rank(p_lgb) + _rank(p_cat) + _rank(p_et)) / 3 * (1 - 1e-6) + tie_break, imp
@@ -142,7 +143,10 @@ def prepare(data_dir='data'):
     dates = train['window_start_ts'].reset_index(drop=True)
     Xtr = Xtr.reset_index(drop=True)
     all_cols = [c for c in Xtr.columns if feature_group(c) != 'leak']
-    final_cols = [c for c in all_cols if feature_group(c) not in EXCLUDED_GROUPS] + UA_PARSED
+    # порядок колонок влияет на подвыборку признаков в LightGBM, поэтому он фиксирован:
+    # базовые поведенческие признаки, затем разобранный UA, затем популярность объявлений
+    itempop = [c for c in all_cols if feature_group(c) == 'x']
+    final_cols = [c for c in all_cols if feature_group(c) not in EXCLUDED_GROUPS] + UA_PARSED + itempop
     print('данные:', stats, f'| признаков: всего {len(all_cols)}, в финальной модели {len(final_cols)}')
     return train, test, Xtr, Xte, y, dates, all_cols, final_cols
 
@@ -157,6 +161,7 @@ def main():
 
     t0 = time.time()
     train, test, Xtr, Xte, y, dates, all_cols, final_cols = prepare(args.data)
+    out_file = 'submission.csv'
 
     # одномерная диагностика: ROC-AUC каждого признака (симметризован: 0.5 = бесполезен)
     uni = {c: roc_auc_score(y, Xtr[c].astype(float).fillna(-1e9)) for c in all_cols
@@ -170,21 +175,21 @@ def main():
     def without(*groups):
         return [c for c in final_cols if feature_group(c) not in groups]
 
-    behavior_cols = without('u')
     pointer_basic = ['p_share_missing_web', 'p_n', 'p_uniq_share', 'p_std_x', 'p_std_y']
     experiments = {
         'baseline_rf_quickstart': ('rf', ['v_n_events', 'c_n_item']),   # повтор quickstart
         'baseline_lgb_quickstart': ('lgb', ['v_n_events', 'c_n_item']),
         FINAL_EXPERIMENT: (FINAL_MODEL, final_cols),
+        # первый сабмит (итерация 8): тот же ансамбль без популярности объявлений
+        'blend_without_itempop': (FINAL_MODEL, without('x')),
         # модель и набор признаков по отдельности
         'lgb_final_features': ('lgb', final_cols),
         'cat_final_features': ('cat', final_cols),
-        'lgb_behavior_only': ('lgb', behavior_cols),
-        'blend_behavior_only': ('blend', behavior_cols),
+        'lgb_behavior_only': ('lgb', without('u', 'x')),
+        'blend_behavior_only': ('blend', without('u', 'x')),
         # отвергнутые варианты (см. README)
         'lgb_with_ua_popularity': ('lgb', final_cols + ['u_ua_popularity']),
-        'lgb_with_itempop': ('lgb', final_cols + group('x')),
-        'lgb_with_itempop_leaky': ('lgb', final_cols + group('leak')),
+        'lgb_itempop_leaky': ('lgb', without('x') + group('leak')),
         'lgb_with_dwell': ('lgb', final_cols + group('w')),
         'lgb_pointer_basic': ('lgb', without('p') + pointer_basic),
     }
@@ -219,8 +224,8 @@ def main():
     sub = pd.DataFrame({'cookie_id': test['cookie_id'].to_numpy(), 'score': score})
     assert len(sub) == len(test) and sub['cookie_id'].is_unique
     assert sub['score'].notna().all() and sub['score'].between(0, 1).all()
-    sub.to_csv('submission.csv', index=False)
-    print(f'submission.csv: {len(sub)} строк, уникальных score: {sub.score.nunique()} | {time.time() - t0:.0f} c')
+    sub.to_csv(out_file, index=False)
+    print(f'{out_file}: {len(sub)} строк, уникальных score: {sub.score.nunique()} | {time.time() - t0:.0f} c')
 
 
 if __name__ == '__main__':

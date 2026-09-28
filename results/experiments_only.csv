@@ -1,2 +1,2 @@
 experiment,n_features,p_at_r70_oof,p_at_r70_fold_mean,p_at_r70_folds,pr_auc_oof,roc_auc_oof,ci90
-blend_final,124,0.8222,0.8197,0.835 0.826 0.841 0.776,0.7999,0.9427,0.756-0.857
+blend_final,128,0.8325,0.8318,0.850 0.828 0.864 0.786,0.8056,0.9451,0.778-0.861
