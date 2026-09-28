@@ -1,0 +1,6 @@
+# Python 3.13.10 (проверено на macOS)
+catboost==1.2.10
+lightgbm==4.7.0
+numpy==2.4.1
+pandas==3.0.0
+scikit-learn==1.9.1

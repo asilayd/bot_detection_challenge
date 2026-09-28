@@ -1,0 +1,11 @@
+,gain_share
+s_query_len,0.033
+t_logdt_std,0.023
+a_age_days,0.022
+c_share_pro_seller,0.019
+t_dt_skew,0.019
+c_loc_entropy,0.019
+p_mean_y,0.018
+a_dup_share,0.018
+c_item_repeat,0.018
+c_cat_entropy,0.017

@@ -1,0 +1,3 @@
+cluster,n_bots_val,p_at_r70_seen,p_at_r70_unseen,roc_auc_seen,roc_auc_unseen
+bots_0,207,0.3452,0.0542,0.9092,0.6562
+bots_1,268,0.8407,0.1449,0.9668,0.8095
